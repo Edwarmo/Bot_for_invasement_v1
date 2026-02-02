@@ -1,0 +1,29 @@
+# 🏛️ DEPENDENCIAS DSS SISTEMA HÍBRIDO OPENCV
+# ==========================================
+
+# CAPA 1 - DATOS HISTÓRICOS
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.0
+
+# CAPA 1 - VISIÓN ARTIFICIAL OPENCV
+opencv-python>=4.8.0
+mss>=9.0.0
+pytesseract>=0.3.10
+
+# CAPA 2 - ANÁLISIS TÉCNICO  
+scipy>=1.10.0
+
+# CAPA 3 - IA INFERENCE
+aiohttp>=3.8.0
+
+# CAPA 5 - INTERFAZ USUARIO
+pyautogui>=0.9.54
+
+# UTILIDADES
+python-dotenv>=1.0.0
+
+# NOTA: También necesitas instalar Tesseract OCR:
+# Windows: https://github.com/UB-Mannheim/tesseract/wiki
+# Ubuntu: sudo apt install tesseract-ocr
+# macOS: brew install tesseract

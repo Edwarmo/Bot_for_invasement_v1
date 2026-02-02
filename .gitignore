@@ -1,0 +1,106 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs y datos temporales
+*.log
+logs/
+temp/
+tmp/
+
+# Datos de trading (archivos pesados)
+*.csv
+*.xlsx
+*.xls
+data/
+historical_data/
+backtest_results/
+capturador/prices.csv
+capturador/*.csv
+
+# Modelos de IA (archivos muy pesados)
+*.bin
+*.gguf
+*.safetensors
+models/
+checkpoints/
+
+# Configuración sensible
+.env
+config.ini
+secrets.json
+api_keys.txt
+credentials/
+
+# Capturas de pantalla y videos
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.mp4
+*.avi
+*.mov
+screenshots/
+
+# Archivos de sistema Windows
+desktop.ini
+$RECYCLE.BIN/
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Archivos específicos del proyecto (según README)
+CONFIGURACION_HIBRIDA.py
+.env.example
+generate_academic_report.py
+CAPA\ 4/
+CAPA\ 7/
+CAPA\ 1/config.py
