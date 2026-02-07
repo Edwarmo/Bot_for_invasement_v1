@@ -8,27 +8,31 @@ import sys
 import os
 import subprocess
 import traceback
+import pandas as pd
+from prediction_tracker import PredictionTracker
 
 # Rutas
 base_dir = os.path.dirname(__file__)
-sys.path.append(os.path.join(base_dir, 'CAPA 1'))
-sys.path.append(os.path.join(base_dir, 'CAPA 3'))
+sys.path.append(os.path.join(base_dir, 'capa1'))
+sys.path.append(os.path.join(base_dir, 'capa3'))
 sys.path.append(os.path.join(base_dir, 'capturador'))
 
 # Importaciones
 from market_data_stream import DataFusionHandler
 from ai_inference_engine import LMStudioClient
 from gui_alerts import mostrar_alerta
+from indicadores_tecnicos import calcular_indicadores_tecnicos, calcular_tendencia_macro
 
 # 🎯 CONFIGURACIÓN
 CSV_PATH = "capturador/prices.csv"
 SYMBOL = "EURUSD=X"
-OBSERVATION_WINDOW = 60  # Reducido a 60s para pruebas rápidas (puedes subirlo a 180)
+OBSERVATION_WINDOW = 45  # Balance entre velocidad y datos suficientes
 
 class DataFusionSystem:
     def __init__(self):
         self.fusion_handler = DataFusionHandler()
         self.ai_client = LMStudioClient()
+        self.prediction_tracker = PredictionTracker()
         self.running = False
         self.capturador_process = None
         self.contexto_yahoo = None
@@ -52,6 +56,15 @@ class DataFusionSystem:
         
         self._start_capturador()
         await asyncio.sleep(4)
+        
+        # Esperar a que LM Studio esté completamente listo
+        print("⏳ Esperando a que LM Studio esté listo...")
+        max_retries = 10
+        for i in range(max_retries):
+            if await self.ai_client.test_connection():
+                break
+            print(f"   Intento {i+1}/{max_retries} - Esperando 10s...")
+            await asyncio.sleep(10)
         
         if not await self.ai_client.test_connection():
             print("⚠️ ERROR CRÍTICO: IA no conectada.")
@@ -77,48 +90,81 @@ class DataFusionSystem:
             self.stop()
 
     async def _monitor_market(self, duration):
-        print(f"\n🕵️ OBSERVANDO MERCADO POR {duration} SEGUNDOS...")
+        print(f"\n🕵️ OBSERVANDO MERCADO (Turbo) POR {duration} SEGUNDOS...")
         start_time = time.time()
         collected_prices = []
         last_price = 0
         
-        while time.time() - start_time < duration:
+        # Optimización: Pre-allocate lista
+        collected_prices = [0] * 200  # Pre-allocate para ~200 lecturas
+        count = 0
+        
+        while time.time() - start_time < duration and count < 200:
             try:
                 current_price = self.fusion_handler.leer_precio_csv(CSV_PATH)
-                if current_price > 0:
-                    if current_price != last_price:
-                        collected_prices.append(current_price)
-                        sys.stdout.write(f"\r   📉 Precio: {current_price:.5f} | Datos: {len(collected_prices)}  ")
+                if current_price > 0 and 1.0 < current_price < 2.0 and current_price != last_price:
+                    collected_prices[count] = current_price
+                    count += 1
+                    if count % 10 == 0:  # Update cada 10 lecturas
+                        sys.stdout.write(f"\r   📉 Capturas: {count} | Último: {current_price:.5f}  ")
                         sys.stdout.flush()
-                        last_price = current_price
-                await asyncio.sleep(1)
+                    last_price = current_price
+                # Sleep mínimo para captura rápida
+                await asyncio.sleep(0.1)
             except:
-                pass
+                await asyncio.sleep(0.1)
 
+        # Trim lista al tamaño real
+        collected_prices = collected_prices[:count]
         print(f"\n✅ Fin observación. Total datos: {len(collected_prices)}")
         return collected_prices
 
     async def _execute_cycle(self):
         try:
-            # 1. Observar
+            # 1. Validar predicciones anteriores
+            self.prediction_tracker.validate_predictions(CSV_PATH)
+            
+            # 2. Observar mercado y calcular métricas de momentum
             recent_prices = await self._monitor_market(OBSERVATION_WINDOW)
             
             if not recent_prices or len(recent_prices) < 5:
-                print("⚠️ Pocos datos. Reintentando...")
-                return
+                print("⚠️ Pocos datos CSV. Usando solo Yahoo Finance...")
+                # FALLBACK: Usar solo Yahoo Finance si no hay datos CSV
+                contexto_yahoo = self.fusion_handler.obtener_contexto_yahoo(SYMBOL)
+                df_5m = contexto_yahoo.get('df_5m', pd.DataFrame())
+                
+                if not df_5m.empty:
+                    # Usar último precio de Yahoo como fallback
+                    current_price = float(df_5m['Close'].iloc[-1])
+                    recent_prices = df_5m['Close'].tail(10).tolist()
+                    print(f"📊 Fallback Yahoo 5m: {current_price:.5f} con {len(recent_prices)} datos")
+                else:
+                    print("❌ Sin datos CSV ni Yahoo. Saltando ciclo...")
+                    return
 
             current_price = recent_prices[-1]
+            self._last_price = current_price  # Guardar para el tracker
             
-            # 2. Consultar IA
-            prompt_data = {
+            # 3. Obtener contexto Yahoo Finance (MACRO - RÍO)
+            contexto_yahoo = self.fusion_handler.obtener_contexto_yahoo(SYMBOL)
+            df_5m = contexto_yahoo.get('df_5m', pd.DataFrame())
+            df_1h = contexto_yahoo.get('df_1h', pd.DataFrame())
+            
+            # 4. Construir datos MACRO vs MICRO para IA
+            contexto_fusion = self.fusion_handler.construir_prompt_contextual(current_price, df_5m, df_1h, SYMBOL)
+            
+            # 5. Armar datos para IA con MACRO-MICRO FUSION
+            learning_context = self.prediction_tracker.get_learning_context()
+            datos_para_ia = {
                 'symbol': SYMBOL,
-                'price': current_price,
-                'session_trend': "UP" if recent_prices[-1] > recent_prices[0] else "DOWN",
-                'macro_context': self.contexto_yahoo
+                'MACRO_RIO': contexto_fusion['MACRO_RIO'],
+                'MICRO_OLA': contexto_fusion['MICRO_OLA'], 
+                'FUSION_RESULT': contexto_fusion['FUSION_RESULT'],
+                'learning_context': learning_context
             }
             
             print(f"\n🧠 ENVIANDO A IA (Esto puede tardar 20-40s)...")
-            respuesta_ia = await self.ai_client.analizar_mercado(prompt_data)
+            respuesta_ia = await self.ai_client.analizar_mercado(datos_para_ia)
 
             # --- DEBUG IMPRESCINDIBLE ---
             print(f"\n📬 RESPUESTA CRUDA RECIBIDA: {respuesta_ia}")
@@ -128,15 +174,47 @@ class DataFusionSystem:
                 print("❌ La IA devolvió None (Timeout o Error).")
                 return
 
-            # 3. GUI
+            # 5. GUI
             self._process_decision_gui(respuesta_ia)
 
         except Exception as e:
             print(f"❌ Error CRÍTICO en ciclo: {e}")
             traceback.print_exc()
+    
+    def _limpiar_contexto_yahoo(self, df_1m, df_1h):
+        """🧹 Convierte DataFrames a diccionarios simples"""
+        contexto_limpio = {
+            "tendencia_1h": "NEUTRAL",
+            "volatilidad": 0.0,
+            "ultimo_precio_yahoo": 0.0
+        }
+        
+        try:
+            # Procesar 1h para tendencia
+            if not df_1h.empty and len(df_1h) >= 2:
+                primer_close = float(df_1h['Close'].iloc[0])
+                ultimo_close = float(df_1h['Close'].iloc[-1])
+                
+                if ultimo_close > primer_close * 1.002:
+                    contexto_limpio["tendencia_1h"] = "BULLISH"
+                elif ultimo_close < primer_close * 0.998:
+                    contexto_limpio["tendencia_1h"] = "BEARISH"
+                
+                contexto_limpio["ultimo_precio_yahoo"] = ultimo_close
+            
+            # Procesar 1m para volatilidad
+            if not df_1m.empty and len(df_1m) >= 5:
+                closes = df_1m['Close'].tail(10)
+                volatilidad = float(closes.std() / closes.mean() * 100)
+                contexto_limpio["volatilidad"] = volatilidad
+                
+        except Exception as e:
+            print(f"⚠️ Error limpiando contexto: {e}")
+        
+        return contexto_limpio
 
     def _process_decision_gui(self, data):
-        """Maneja objetos AIResponse y lanza la alerta"""
+        """Maneja objetos AIResponse y lanza la alerta con información de momentum"""
         try:
             # Manejar objeto AIResponse (no diccionario)
             if hasattr(data, 'decision'):
@@ -145,22 +223,59 @@ class DataFusionSystem:
             else:
                 # Fallback para diccionarios
                 accion = data.get('direccion', data.get('decision', 'NEUTRAL')).upper()
-                razon = data.get('razon', "Análisis técnico determinista")
+                razon = data.get('razon', "Análisis de momentum")
 
-            # Mapeo de colores y textos
-            if "UP" in accion or "CALL" in accion or "BULLISH" in accion:
-                display_text = "CALL (SUBE) 🟢"
-            elif "DOWN" in accion or "PUT" in accion or "BEARISH" in accion:
-                display_text = "PUT (BAJA) 🔴"
+            # Extraer confianza de la razón
+            confidence = 50  # Default
+            try:
+                if "Score:" in razon:
+                    import re
+                    match = re.search(r'Score: (\d+)%', razon)
+                    if match:
+                        confidence = int(match.group(1))
+                elif "Conf:" in razon:
+                    import re
+                    match = re.search(r'Conf: (\d+)%', razon)
+                    if match:
+                        confidence = int(match.group(1))
+            except Exception as e:
+                print(f"⚠️ Error extrayendo confianza: {e}")
+                confidence = 50
+
+            # SOLO MOSTRAR SI CONFIANZA > 75%
+            if confidence <= 75:
+                print(f"🔇 Señal oculta: {accion} (confianza {confidence}% ≤ 75%)")
+                return
+            
+            # Registrar predicción para validación futura
+            current_price = getattr(self, '_last_price', 1.17200)  # Precio actual
+            self.prediction_tracker.log_prediction(accion, confidence, current_price, razon)
+
+            # Mapeo de colores y textos para momentum
+            if "CALL" in accion:
+                display_text = "CALL (SUBE) 🚀"
+            elif "PUT" in accion:
+                display_text = "PUT (BAJA) 📉"
             else:
-                display_text = "NEUTRAL ⚪"
+                # Si es OCULTAR, NEUTRAL, etc. - no mostrar nada
+                print(f"🔇 Señal oculta: {accion} (confianza insuficiente)")
+                return
 
             print("\n" + "█"*60)
             print(f"🚀 LANZANDO POPUP: {display_text}")
+            print(f"📊 MOMENTUM: {razon}")
             print("█"*60)
 
+            # Determinar expiración basada en tipo de movimiento
+            if "EXPLOSIÓN" in razon:
+                expiracion = "1 MINUTO"
+            elif "TENDENCIA ORDENADA" in razon:
+                expiracion = "3 - 5 MINUTOS"
+            else:
+                expiracion = "3 - 5 MINUTOS"
+
             # Lanza la ventana
-            mostrar_alerta(display_text, razon, "3 - 5 MINUTOS")
+            mostrar_alerta(display_text, razon, expiracion)
 
         except Exception as e:
             print(f"❌ Error mostrando ventana: {e}")
@@ -168,10 +283,45 @@ class DataFusionSystem:
 
     def stop(self):
         self.running = False
-        if self.capturador_process: self.capturador_process.terminate()
+        if self.capturador_process: 
+            self.capturador_process.terminate()
+        # Cerrar sesión IA
+        if hasattr(self.ai_client, 'session') and self.ai_client.session:
+            try:
+                # Crear nueva tarea para cerrar sesión
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.ai_client.close())
+                loop.close()
+            except Exception as e:
+                print(f"⚠️ Error cerrando sesión IA: {e}")
+
+async def ciclo_principal():
+    """Función que mantiene el bot vivo y maneja reinicios suaves"""
+    print("🚀 INICIANDO BOT...")
+    
+    # Inicializar sistema
+    system = DataFusionSystem()
+    
+    # Bucle infinito controlado
+    while True:
+        try:
+            await system.start()
+            
+        except Exception as e:
+            print(f"⚠️ Error en ciclo principal: {e}")
+            print("🔄 Reiniciando en 5 segundos...")
+            await asyncio.sleep(5)
+            
+        # Pequeña pausa entre ciclos
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
     try:
-        asyncio.run(DataFusionSystem().start())
-    except KeyboardInterrupt: 
-        pass
+        # UNA SOLA LLAMADA A RUN
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            
+        asyncio.run(ciclo_principal())
+    except KeyboardInterrupt:
+        print("\n👋 Bot detenido por usuario.")

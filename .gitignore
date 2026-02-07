@@ -84,6 +84,7 @@ credentials/
 *.avi
 *.mov
 screenshots/
+debug_ocr/
 
 # Archivos de sistema Windows
 desktop.ini
@@ -96,11 +97,3 @@ $RECYCLE.BIN/
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Archivos específicos del proyecto (según README)
-CONFIGURACION_HIBRIDA.py
-.env.example
-generate_academic_report.py
-CAPA\ 4/
-CAPA\ 7/
-CAPA\ 1/config.py
