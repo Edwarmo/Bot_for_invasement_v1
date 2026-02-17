@@ -7,6 +7,11 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 from typing import Optional, Callable
+import time
+
+# Variable global para rastrear ventana activa
+_active_alert_window = None
+_active_alert_lock = threading.Lock()
 
 class TradingAlert:
     """Ventana de alerta thread-safe con temporizador"""
@@ -23,6 +28,9 @@ class TradingAlert:
         self.root.title(f"🤖 SEÑAL IA: {self.decision}")
         self.root.geometry("400x350")
         self.root.attributes("-topmost", True)
+        
+        # Cerrar con X también limpia la referencia
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
         # Colores dinámicos
         bg_color = "#1b5e20" if "CALL" in self.decision else "#b71c1c"
@@ -67,6 +75,14 @@ class TradingAlert:
         self.remaining = 60
         self.update_timer()
     
+    def _on_close(self):
+        """Maneja el cierre de la ventana"""
+        global _active_alert_window
+        with _active_alert_lock:
+            if _active_alert_window == self:
+                _active_alert_window = None
+        self.root.destroy()
+    
     def update_timer(self):
         """Actualiza la barra de progreso"""
         if self.remaining > 0:
@@ -75,17 +91,43 @@ class TradingAlert:
             self.progress['value'] = step
             self.root.after(1000, self.update_timer)
         else:
-            self.root.destroy()
+            self._on_close()
     
     def show(self):
         """Muestra la alerta"""
         self.root.mainloop()
 
+def _close_existing_alert():
+    """Cierra cualquier ventana de alerta existente"""
+    global _active_alert_window
+    with _active_alert_lock:
+        if _active_alert_window is not None:
+            try:
+                _active_alert_window.root.destroy()
+            except:
+                pass
+            _active_alert_window = None
+
 def mostrar_alerta(decision: str, razon: str, duracion: str = "3-5 MIN"):
     """Función helper para mostrar alertas desde cualquier hilo"""
     def _show():
+        global _active_alert_window
+        
+        # Cerrar cualquier ventana anterior PRIMERO
+        _close_existing_alert()
+        
+        # Crear y mostrar nueva alerta
         app = TradingAlert(decision, razon, duracion)
+        
+        with _active_alert_lock:
+            _active_alert_window = app
+        
         app.show()
+        
+        # Limpiar referencia cuando termine
+        with _active_alert_lock:
+            if _active_alert_window == app:
+                _active_alert_window = None
     
     # Ejecutar en hilo separado para no bloquear
     thread = threading.Thread(target=_show, daemon=True)

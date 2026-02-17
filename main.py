@@ -1,5 +1,5 @@
 """
-🚀 MAIN.PY - VERSIÓN DEFINITIVA (DICCIONARIOS + DEBUG)
+🚀 MAIN.PY - VERSIÓN DEFINITIVA (DICCIONARIOS + DEBUG + QA)
 """
 
 import asyncio
@@ -9,24 +9,105 @@ import os
 import subprocess
 import traceback
 import pandas as pd
-from prediction_tracker import PredictionTracker
+from datetime import datetime
+from pathlib import Path
 
-# Rutas
-base_dir = os.path.dirname(__file__)
-sys.path.append(os.path.join(base_dir, 'capa1'))
-sys.path.append(os.path.join(base_dir, 'capa3'))
-sys.path.append(os.path.join(base_dir, 'capturador'))
+# Agregar src al path
+base_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(base_dir, 'src'))
 
-# Importaciones
-from market_data_stream import DataFusionHandler
-from ai_inference_engine import LMStudioClient
-from gui_alerts import mostrar_alerta
-from indicadores_tecnicos import calcular_indicadores_tecnicos, calcular_tendencia_macro
+from domain.prediction import PredictionTracker
+from data.market_stream import DataFusionHandler
+from services.ai_client import LMStudioClient
+from services.alerts import mostrar_alerta
+from services.indicators import calcular_indicadores_tecnicos, calcular_tendencia_macro
 
 # 🎯 CONFIGURACIÓN
 CSV_PATH = "capturador/prices.csv"
 SYMBOL = "EURUSD=X"
 OBSERVATION_WINDOW = 45  # Balance entre velocidad y datos suficientes
+STAGNATION_TIMEOUT = 20  # QA: Segundos sin cambio de precio para detectar estancamiento
+
+# 📊 LOGS DE AUDITORÍA
+LOGS_DIR = Path(__file__).parent / "logs"
+LOGS_DIR.mkdir(exist_ok=True)
+AUDIT_LOG = LOGS_DIR / "decisiones_historia.csv"
+
+# Crear CSV de auditoría si no existe
+if not AUDIT_LOG.exists():
+    with open(AUDIT_LOG, 'w', encoding='utf-8') as f:
+        f.write("timestamp,precio_entrada,decision,confianza,rsi_momento,resultado,precio_salida\n")
+
+
+def guardar_audit_log(timestamp: str, precio_entrada: float, decision: str, confianza: int, rsi_momento: float = 0.0, resultado: str = "PENDIENTE", precio_salida: float = 0.0):
+    """QA: Guarda decisión en log de auditoría"""
+    try:
+        with open(AUDIT_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"{timestamp},{precio_entrada},{decision},{confianza},{rsi_momento:.2f},{resultado},{precio_salida:.5f}\n")
+        print(f"📝 Audit log guardado: {decision} @ {precio_entrada}")
+    except Exception as e:
+        print(f"⚠️ Error guardando audit log: {e}")
+
+
+def validar_decisiones_pendientes():
+    """QA: Valida decisiones pendientes después de 4 minutos"""
+    try:
+        if not AUDIT_LOG.exists():
+            return
+        
+        # Leer decisiones pendientes
+        df = pd.read_csv(AUDIT_LOG)
+        pendientes = df[df['resultado'] == 'PENDIENTE']
+        
+        if pendientes.empty:
+            return
+        
+        # Leer precios actuales del CSV
+        if not os.path.exists(CSV_PATH):
+            return
+        
+        df_prices = pd.read_csv(CSV_PATH)
+        if df_prices.empty:
+            return
+        
+        ultimo_precio = df_prices['price'].iloc[-1]
+        ahora = datetime.now()
+        
+        for idx, row in pendientes.iterrows():
+            try:
+                fecha_decision = datetime.strptime(row['timestamp'], "%Y-%m-%d %H:%M:%S")
+                tiempo_transcurrido = (ahora - fecha_decision).total_seconds()
+                
+                # Solo validar si pasaron al menos 4 minutos (240 segundos)
+                if tiempo_transcurrido >= 240:
+                    precio_entrada = row['precio_entrada']
+                    decision = row['decision']
+                    
+                    # Determinar resultado
+                    if decision == "CALL" and ultimo_precio > precio_entrada:
+                        resultado = "ACERTADO"
+                    elif decision == "PUT" and ultimo_precio < precio_entrada:
+                        resultado = "ACERTADO"
+                    elif decision == "CALL" and ultimo_precio <= precio_entrada:
+                        resultado = "FALLIDO"
+                    elif decision == "PUT" and ultimo_precio >= precio_entrada:
+                        resultado = "FALLIDO"
+                    else:
+                        resultado = "NINGUNO"
+                    
+                    # Actualizar CSV
+                    df.at[idx, 'resultado'] = resultado
+                    df.at[idx, 'precio_salida'] = ultimo_precio
+                    print(f"✅ Validado: {decision} @ {precio_entrada} -> {resultado} @ {ultimo_precio:.5f}")
+            except Exception as e:
+                print(f"⚠️ Error validando decisión: {e}")
+        
+        # Guardar cambios
+        df.to_csv(AUDIT_LOG, index=False)
+        
+    except Exception as e:
+        print(f"⚠️ Error en validación: {e}")
+
 
 class DataFusionSystem:
     def __init__(self):
@@ -36,6 +117,8 @@ class DataFusionSystem:
         self.running = False
         self.capturador_process = None
         self.contexto_yahoo = None
+        self.last_price = None
+        self.last_price_time = None
 
     def _start_capturador(self):
         try:
@@ -81,6 +164,9 @@ class DataFusionSystem:
         self.running = True
         try:
             while self.running:
+                # QA: Validar decisiones pendientes antes de nuevo ciclo
+                validar_decisiones_pendientes()
+                
                 await self._execute_cycle()
                 print("\n💤 Enfriamiento de 10s...")
                 await asyncio.sleep(10)
@@ -95,6 +181,10 @@ class DataFusionSystem:
         collected_prices = []
         last_price = 0
         
+        # QA: Detección de estancamiento
+        last_price_change_time = time.time()
+        stagnation_detected = False
+        
         # Optimización: Pre-allocate lista
         collected_prices = [0] * 200  # Pre-allocate para ~200 lecturas
         count = 0
@@ -102,6 +192,15 @@ class DataFusionSystem:
         while time.time() - start_time < duration and count < 200:
             try:
                 current_price = self.fusion_handler.leer_precio_csv(CSV_PATH)
+                
+                # QA: Detectar estancamiento (20s sin cambio)
+                if current_price != last_price and last_price > 0:
+                    time_since_change = time.time() - last_price_change_time
+                    if time_since_change > STAGNATION_TIMEOUT and not stagnation_detected:
+                        print(f"\n⚠️ ESTANCAMIENTO DETECTADO: {time_since_change:.1f}s sin cambio de precio!")
+                        stagnation_detected = True
+                    last_price_change_time = time.time()
+                
                 if current_price > 0 and 1.0 < current_price < 2.0 and current_price != last_price:
                     collected_prices[count] = current_price
                     count += 1
@@ -114,6 +213,11 @@ class DataFusionSystem:
             except:
                 await asyncio.sleep(0.1)
 
+        # QA: Verificar si hubo estancamiento
+        if stagnation_detected:
+            print("\n🚫 OPERACIÓN CANCELADA: Mercado estancado (sin cambios en 20s)")
+            return []  # Retornar lista vacía para cancelar operación
+        
         # Trim lista al tamaño real
         collected_prices = collected_prices[:count]
         print(f"\n✅ Fin observación. Total datos: {len(collected_prices)}")
@@ -250,6 +354,12 @@ class DataFusionSystem:
             # Registrar predicción para validación futura
             current_price = getattr(self, '_last_price', 1.17200)  # Precio actual
             self.prediction_tracker.log_prediction(accion, confidence, current_price, razon)
+
+            # QA: GUARDAR EN LOG DE AUDITORÍA
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Calcular RSI简单 (usando datos disponibles o 50 por defecto)
+            rsi_momento = 50.0  # Placeholder - se puede mejorar con indicadores
+            guardar_audit_log(timestamp, current_price, accion, confidence, rsi_momento)
 
             # Mapeo de colores y textos para momentum
             if "CALL" in accion:

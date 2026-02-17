@@ -3,16 +3,32 @@
 Responsabilidad: Configuración de coordenadas para OCR
 """
 
-# Región de búsqueda por defecto (x, y, width, height)
-SEARCH_REGION = (1560, 520, 90, 40)
+# Nueva Región de búsqueda (ROI) actualizada
+ROI_CONFIG = {
+    'x': 1534,
+    'y': 318, 
+    'width': 231,
+    'height': 532
+}
+
+# Alias para compatibilidad
+SEARCH_REGION = (
+    ROI_CONFIG['x'],
+    ROI_CONFIG['y'],
+    ROI_CONFIG['width'],
+    ROI_CONFIG['height']
+)
 
 # Configuración OCR
 OCR_CONFIG = {
     'lang': 'eng',
     'oem': 3,
-    'psm': 8,
-    'config': '--psm 8 -c tessedit_char_whitelist=0123456789.'
+    'psm': 7,
+    'config': '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789.,$'
 }
 
 # Directorio para debug
-DEBUG_DIR = "debug_ocr"
+DEBUG_DIR = "tr__shh"
+
+# Intervalo de captura (segundos)
+CAPTURE_INTERVAL = 5
